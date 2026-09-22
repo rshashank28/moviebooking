@@ -1,0 +1,33 @@
+{
+  "name": "showpulse-server",
+  "version": "1.0.0",
+  "description": "ShowPulse Ticketing API Server",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js",
+    "seed": "node seed/index.js",
+    "test": "node --test tests/health.test.js tests/auth.test.js tests/catalog_venue.test.js tests/seat_lock.test.js tests/booking_payment.test.js tests/refund_search_dashboard.test.js tests/admin_organizer.test.js tests/recommendation_ai.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
+    "ioredis": "^5.4.1",
+    "joi": "^17.13.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.3.4",
+    "morgan": "^1.10.0",
+    "nanoid": "^3.3.7",
+    "qrcode": "^1.5.3",
+    "razorpay": "^2.9.2",
+    "socket.io": "^4.7.5",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  }
+}

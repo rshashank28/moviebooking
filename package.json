@@ -1,0 +1,16 @@
+{
+  "name": "showpulse-platform",
+  "version": "1.0.0",
+  "description": "Production-ready Modern Movie, Event & Ticket Booking Platform",
+  "main": "server/app.js",
+  "scripts": {
+    "server": "node server/app.js",
+    "client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "seed": "node server/seed/index.js",
+    "test": "node --test server/tests/*.test.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
