@@ -57,8 +57,9 @@ export default function AuthModal() {
           email: formData.email,
           password: formData.password
         });
-        setAuth(res.data.user, res.data.accessToken, res.data.refreshToken);
-        success(`Welcome back, ${res.data.user.name}!`);
+        const authData = res.data?.data || res.data;
+        setAuth(authData.user, authData.accessToken, authData.refreshToken);
+        success(`Welcome back, ${authData.user.name}!`);
         closeAuthModal();
       } else if (authModalMode === 'register') {
         const payload = {
@@ -71,11 +72,12 @@ export default function AuthModal() {
           ...(formData.referralCode ? { referralCode: formData.referralCode } : {})
         };
         const res = await api.post('/auth/register', payload);
-        setAuth(res.data.user, res.data.accessToken, res.data.refreshToken);
+        const authData = res.data?.data || res.data;
+        setAuth(authData.user, authData.accessToken, authData.refreshToken);
         success(`Account created successfully! Enjoy booking on ShowPulse.`);
         closeAuthModal();
       } else if (authModalMode === 'forgot') {
-        const res = await api.post('/auth/forgot-password', { email: formData.email });
+        await api.post('/auth/forgot-password', { email: formData.email });
         success('Password reset instructions generated.');
         openAuthModal('login');
       }

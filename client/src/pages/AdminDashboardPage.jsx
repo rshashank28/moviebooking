@@ -78,10 +78,10 @@ export default function AdminDashboardPage() {
         api.get('/admin/coupons')
       ]);
 
-      setMetrics(metricsRes.data?.overview);
-      setUsersList(usersRes.data || []);
-      setOrganizersList(orgsRes.data || []);
-      setCouponsList(couponsRes.data || []);
+      setMetrics(metricsRes.data?.data?.overview || metricsRes.data?.overview);
+      setUsersList(usersRes.data?.data || usersRes.data || []);
+      setOrganizersList(orgsRes.data?.data || orgsRes.data || []);
+      setCouponsList(couponsRes.data?.data || couponsRes.data || []);
     } catch (err) {
       console.error('Admin API error', err);
       toastError(err.message || 'Access restricted to Administrator accounts');

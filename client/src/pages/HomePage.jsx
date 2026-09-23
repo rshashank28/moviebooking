@@ -33,14 +33,14 @@ export default function HomePage() {
     setLoading(true);
     try {
       const [healthRes, moviesRes, eventsRes] = await Promise.all([
-        api.get('/health').catch(() => ({ data: { status: 'offline' } })),
-        api.get('/movies', { params: { city: selectedCity?.name, limit: 4, sort: 'trending' } }).catch(() => ({ data: [] })),
-        api.get('/events', { params: { city: selectedCity?.name, limit: 3 } }).catch(() => ({ data: [] }))
+        api.get('/health').catch(() => ({ data: { data: { status: 'offline' } } })),
+        api.get('/movies', { params: { city: selectedCity?.name, limit: 4, sort: 'trending' } }).catch(() => ({ data: { data: [] } })),
+        api.get('/events', { params: { city: selectedCity?.name, limit: 3 } }).catch(() => ({ data: { data: [] } }))
       ]);
 
-      setServerHealth(healthRes.data);
-      setMovies(moviesRes.data || []);
-      setEvents(eventsRes.data || []);
+      setServerHealth(healthRes.data?.data || healthRes.data);
+      setMovies(moviesRes.data?.data || []);
+      setEvents(eventsRes.data?.data || []);
     } catch (err) {
       console.error('Home data error', err);
     } finally {

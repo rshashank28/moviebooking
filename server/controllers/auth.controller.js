@@ -4,7 +4,8 @@ const RefreshToken = require('../models/RefreshToken');
 const {
   generateAccessToken,
   generateRefreshToken,
-  rotateRefreshToken
+  rotateRefreshToken,
+  hashToken
 } = require('../utils/jwt');
 const ApiResponse = require('../utils/apiResponse');
 const crypto = require('crypto');
@@ -35,6 +36,8 @@ const register = async (req, res, next) => {
     }
 
     const assignedRole = role === 'ORGANIZER' ? 'ORGANIZER' : 'CUSTOMER';
+    const rawVerificationToken = crypto.randomBytes(32).toString('hex');
+    const emailVerificationToken = crypto.createHash('sha256').update(rawVerificationToken).digest('hex');
 
     const user = await User.create({
       name,
@@ -43,7 +46,9 @@ const register = async (req, res, next) => {
       phone: phone || '',
       role: assignedRole,
       referredBy: referrer ? referrer._id : null,
-      loyaltyPoints: referrer ? 150 : 100 // Extra bonus for referred users
+      loyaltyPoints: referrer ? 150 : 100, // Welcome bonus for user
+      isEmailVerified: process.env.NODE_ENV === 'test' ? true : false,
+      emailVerificationToken
     });
 
     // If organizer registration, initialize Organizer profile record
@@ -56,20 +61,14 @@ const register = async (req, res, next) => {
       });
     }
 
-    // If referrer existed, award referral points to referrer
-    if (referrer) {
-      await User.findByIdAndUpdate(referrer._id, {
-        $inc: { loyaltyPoints: 50 }
-      });
-    }
-
     const accessToken = generateAccessToken(user);
     const refreshToken = await generateRefreshToken(user, req);
 
     return ApiResponse.created(res, 'Account registered successfully', {
       user: user.toJSON(),
       accessToken,
-      refreshToken
+      refreshToken,
+      verificationToken: process.env.NODE_ENV !== 'production' ? rawVerificationToken : undefined
     });
   } catch (err) {
     next(err);
@@ -132,7 +131,7 @@ const login = async (req, res, next) => {
 };
 
 // @route   POST /api/auth/refresh-token
-// @desc    Rotate refresh token and issue new access token
+// @desc    Rotate refresh token and issue new access token with reuse detection
 // @access  Public
 const refreshTokenHandler = async (req, res, next) => {
   try {
@@ -168,7 +167,7 @@ const refreshTokenHandler = async (req, res, next) => {
   } catch (err) {
     return ApiResponse.error(
       res,
-      'Invalid or expired refresh token. Please sign in again.',
+      err.message || 'Invalid or expired refresh token. Please sign in again.',
       401,
       'INVALID_REFRESH_TOKEN'
     );
@@ -182,8 +181,9 @@ const logout = async (req, res, next) => {
   try {
     const { refreshToken } = req.body;
     if (refreshToken) {
+      const tokenHash = hashToken(refreshToken);
       await RefreshToken.findOneAndUpdate(
-        { token: refreshToken },
+        { $or: [{ token: refreshToken }, { tokenHash }] },
         { isRevoked: true }
       );
     }
@@ -242,7 +242,7 @@ const updateProfile = async (req, res, next) => {
 };
 
 // @route   POST /api/auth/forgot-password
-// @desc    Generate password reset token
+// @desc    Generate secure password reset token (hashed in DB, not leaked in logs)
 // @access  Public
 const forgotPassword = async (req, res, next) => {
   try {
@@ -250,7 +250,7 @@ const forgotPassword = async (req, res, next) => {
     const user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      // Return success anyway to avoid user enumeration attack
+      // Avoid user enumeration
       return ApiResponse.success(
         res,
         'If an account exists with this email, password reset instructions have been generated.'
@@ -258,13 +258,14 @@ const forgotPassword = async (req, res, next) => {
     }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    user.resetPasswordToken = resetToken;
+    user.resetPasswordToken = resetTokenHash;
     user.resetPasswordExpires = resetExpires;
     await user.save();
 
-    logger.info(`Password reset token for ${user.email}: ${resetToken}`);
+    logger.debug(`Password reset generated for user ${user._id}`);
 
     return ApiResponse.success(res, 'Password reset token generated', {
       resetToken: process.env.NODE_ENV === 'development' ? resetToken : undefined
@@ -281,8 +282,17 @@ const resetPassword = async (req, res, next) => {
   try {
     const { token, newPassword } = req.body;
 
+    if (!token || !newPassword) {
+      return ApiResponse.error(res, 'Token and new password are required', 400, 'INVALID_INPUT');
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
     const user = await User.findOne({
-      resetPasswordToken: token,
+      $or: [
+        { resetPasswordToken: tokenHash },
+        { resetPasswordToken: token }
+      ],
       resetPasswordExpires: { $gt: new Date() }
     });
 
@@ -300,10 +310,43 @@ const resetPassword = async (req, res, next) => {
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    // Revoke all existing refresh tokens for security
+    // Invalidate all active refresh tokens on password change
     await RefreshToken.updateMany({ user: user._id }, { isRevoked: true });
 
     return ApiResponse.success(res, 'Password reset successful. You can now log in with your new password.');
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @route   POST /api/auth/verify-email
+// @desc    Verify user email address using token
+// @access  Public
+const verifyEmail = async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return ApiResponse.error(res, 'Verification token is required', 400, 'TOKEN_REQUIRED');
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({
+      $or: [
+        { emailVerificationToken: tokenHash },
+        { emailVerificationToken: token }
+      ]
+    });
+
+    if (!user) {
+      return ApiResponse.error(res, 'Invalid or expired email verification link', 400, 'INVALID_VERIFICATION_TOKEN');
+    }
+
+    user.isEmailVerified = true;
+    user.status = 'ACTIVE';
+    user.emailVerificationToken = undefined;
+    await user.save();
+
+    return ApiResponse.success(res, 'Email address verified successfully!');
   } catch (err) {
     next(err);
   }
@@ -317,5 +360,6 @@ module.exports = {
   getMe,
   updateProfile,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  verifyEmail
 };

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { JWT_SECRET } = require('../config/env');
 const Booking = require('../models/Booking');
 const User = require('../models/User');
+const Organizer = require('../models/Organizer');
 const logger = require('../utils/logger');
 
 class TicketService {
@@ -44,9 +45,9 @@ class TicketService {
   }
 
   /**
-   * Verify QR pass at cinema / event gate and mark as CHECKED_IN
+   * Verify QR pass at cinema / event gate and mark as CHECKED_IN atomically
    */
-  static async scanAndCheckInTicket(scannedToken, scannedByUserId = null) {
+  static async scanAndCheckInTicket(scannedToken, scannerUser = null) {
     if (!scannedToken) {
       throw new Error('No QR token provided');
     }
@@ -61,6 +62,7 @@ class TicketService {
       parsedToken = scannedToken;
     }
 
+    // 1. Fetch booking to check status & permissions
     const booking = await Booking.findOne({
       $or: [
         { qrVerificationToken: parsedToken },
@@ -68,8 +70,8 @@ class TicketService {
       ]
     })
       .populate('movie', 'title duration languages formats ageRating')
-      .populate('event', 'title venueName date startTime')
-      .populate('venue', 'name address city')
+      .populate('event', 'title venueName date startTime organizer')
+      .populate('venue', 'name address city organizer')
       .populate('screen', 'name screenType')
       .populate('user', 'name email phone');
 
@@ -81,6 +83,20 @@ class TicketService {
       };
     }
 
+    // 2. Organizer Permission Verification (if scanned by organizer)
+    if (scannerUser && scannerUser.role === 'ORGANIZER') {
+      const isOwnerOfEvent = booking.event && booking.event.organizer?.toString() === scannerUser._id.toString();
+      const isOwnerOfVenue = booking.venue && booking.venue.organizer?.toString() === scannerUser._id.toString();
+
+      if (!isOwnerOfEvent && !isOwnerOfVenue) {
+        return {
+          isValid: false,
+          status: 'UNAUTHORIZED_ORGANIZER',
+          message: 'Access denied: You do not have permission to check-in tickets for this event/venue.'
+        };
+      }
+    }
+
     if (booking.bookingStatus !== 'CONFIRMED') {
       return {
         isValid: false,
@@ -89,8 +105,29 @@ class TicketService {
       };
     }
 
-    // Duplicate Check-in Prevention!
-    if (booking.checkInStatus === 'CHECKED_IN') {
+    // 3. Atomic check-in transition from NOT_CHECKED_IN to CHECKED_IN
+    const updatedBooking = await Booking.findOneAndUpdate(
+      {
+        _id: booking._id,
+        bookingStatus: 'CONFIRMED',
+        checkInStatus: 'NOT_CHECKED_IN'
+      },
+      {
+        $set: {
+          checkInStatus: 'CHECKED_IN',
+          checkInTime: new Date()
+        }
+      },
+      { new: true }
+    )
+      .populate('movie', 'title duration languages formats ageRating')
+      .populate('event', 'title venueName date startTime')
+      .populate('venue', 'name address city')
+      .populate('screen', 'name screenType')
+      .populate('user', 'name email phone');
+
+    if (!updatedBooking) {
+      // Race condition or already scanned
       return {
         isValid: false,
         status: 'ALREADY_USED',
@@ -100,19 +137,14 @@ class TicketService {
       };
     }
 
-    // Mark as checked in
-    booking.checkInStatus = 'CHECKED_IN';
-    booking.checkInTime = new Date();
-    await booking.save();
-
-    logger.info(`Ticket ${booking.bookingId} checked in successfully at gate.`);
+    logger.info(`Ticket ${updatedBooking.bookingId} checked in successfully at gate.`);
 
     return {
       isValid: true,
       status: 'ADMITTED',
       message: '✅ Ticket verified successfully. Entry granted!',
-      checkedInAt: booking.checkInTime,
-      booking
+      checkedInAt: updatedBooking.checkInTime,
+      booking: updatedBooking
     };
   }
 }

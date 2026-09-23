@@ -41,7 +41,7 @@ export default function EventsPage({ defaultCategory }) {
         limit: 20
       };
       const res = await api.get('/events', { params });
-      setEvents(res.data || []);
+      setEvents(res.data?.data || []);
     } catch (err) {
       console.error('Failed to load events', err);
       setEvents([]);

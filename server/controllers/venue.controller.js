@@ -1,10 +1,12 @@
 const Venue = require('../models/Venue');
 const Screen = require('../models/Screen');
 const Seat = require('../models/Seat');
+const ShowSeat = require('../models/ShowSeat');
 const Show = require('../models/Show');
 const Movie = require('../models/Movie');
 const ApiResponse = require('../utils/apiResponse');
 const { getRedisClient } = require('../config/redis');
+const SeatLockService = require('../services/seatLock.service');
 
 // @route   GET /api/venues
 // @desc    Get venues by city
@@ -83,7 +85,7 @@ const createScreenWithSeats = async (req, res, next) => {
       layout: defaultLayout
     });
 
-    // Bulk generate individual Seat records
+    // Bulk generate physical Seat records
     const seatDocs = [];
     for (const rowConfig of defaultLayout) {
       for (let i = 1; i <= rowConfig.seatCount; i++) {
@@ -94,8 +96,7 @@ const createScreenWithSeats = async (req, res, next) => {
           number: i,
           seatIdentifier: `${rowConfig.rowLabel}${i}`,
           category: rowConfig.category,
-          columnPosition: i,
-          isAvailable: true
+          columnPosition: i
         });
       }
     }
@@ -112,7 +113,7 @@ const createScreenWithSeats = async (req, res, next) => {
 };
 
 // @route   POST /api/shows
-// @desc    Schedule a movie show
+// @desc    Schedule a movie show and generate show-specific seat inventory
 // @access  Admin / Organizer
 const createShow = async (req, res, next) => {
   try {
@@ -162,14 +163,36 @@ const createShow = async (req, res, next) => {
       status: 'SCHEDULED'
     });
 
-    return ApiResponse.created(res, 'Show scheduled successfully', show);
+    // Generate show-specific ShowSeat inventory records
+    const physicalSeats = await Seat.find({ screen: screen._id });
+    const priceMap = new Map();
+    defaultPriceTiers.forEach((tier) => priceMap.set(tier.category, tier.price));
+
+    if (physicalSeats.length > 0) {
+      const showSeatDocs = physicalSeats.map((seat) => ({
+        show: show._id,
+        seat: seat._id,
+        screen: screen._id,
+        venue: venue._id,
+        seatIdentifier: seat.seatIdentifier,
+        row: seat.row,
+        number: seat.number,
+        category: seat.category,
+        price: priceMap.get(seat.category) || 200,
+        status: 'AVAILABLE'
+      }));
+
+      await ShowSeat.insertMany(showSeatDocs);
+    }
+
+    return ApiResponse.created(res, 'Show scheduled successfully with inventory initialized', show);
   } catch (err) {
     next(err);
   }
 };
 
 // @route   GET /api/shows/:id
-// @desc    Get show details with venue, movie, screen and interactive seat layout with live lock state
+// @desc    Get show details with venue, movie, screen and show-specific seat inventory with live lock state
 // @access  Public
 const getShowDetailsWithSeats = async (req, res, next) => {
   try {
@@ -184,8 +207,32 @@ const getShowDetailsWithSeats = async (req, res, next) => {
       return ApiResponse.error(res, 'Show not found', 404, 'SHOW_NOT_FOUND');
     }
 
-    // Retrieve all seats generated for this screen
-    const seats = await Seat.find({ screen: show.screen._id }).sort({ row: 1, number: 1 });
+    // Retrieve show-specific seat inventory
+    let showSeats = await ShowSeat.find({ show: show._id }).sort({ row: 1, number: 1 });
+
+    // Fallback/auto-population for pre-existing shows without ShowSeat documents
+    if (showSeats.length === 0) {
+      const physicalSeats = await Seat.find({ screen: show.screen._id }).sort({ row: 1, number: 1 });
+      const priceMap = new Map();
+      (show.priceTiers || []).forEach((t) => priceMap.set(t.category, t.price));
+
+      if (physicalSeats.length > 0) {
+        const docs = physicalSeats.map((s) => ({
+          show: show._id,
+          seat: s._id,
+          screen: show.screen._id,
+          venue: show.venue?._id,
+          seatIdentifier: s.seatIdentifier,
+          row: s.row,
+          number: s.number,
+          category: s.category,
+          price: priceMap.get(s.category) || 200,
+          status: show.bookedSeats?.includes(s.seatIdentifier) ? 'BOOKED' : 'AVAILABLE'
+        }));
+        await ShowSeat.insertMany(docs);
+        showSeats = await ShowSeat.find({ show: show._id }).sort({ row: 1, number: 1 });
+      }
+    }
 
     // Query active Redis lock keys for this show to determine current real-time lock status
     const redis = getRedisClient();
@@ -198,19 +245,18 @@ const getShowDetailsWithSeats = async (req, res, next) => {
       lockedSeatIds.add(seatId);
     }
 
-    // Enrich seats with price and real-time availability status
-    const priceMap = new Map();
-    (show.priceTiers || []).forEach((tier) => {
-      priceMap.set(tier.category, tier.price);
-    });
+    // Enrich show seats with real-time lock status
+    const enrichedSeats = showSeats.map((seat) => {
+      const isLockedInRedis = lockedSeatIds.has(seat.seatIdentifier);
+      let effectiveStatus = seat.status;
 
-    const enrichedSeats = seats.map((seat) => {
-      const isLocked = lockedSeatIds.has(seat.seatIdentifier) || lockedSeatIds.has(seat._id.toString());
-      const price = priceMap.get(seat.category) || 200;
-
-      let status = 'AVAILABLE';
-      if (!seat.isAvailable) status = 'BOOKED';
-      else if (isLocked) status = 'LOCKED';
+      if (seat.status === 'BOOKED') {
+        effectiveStatus = 'BOOKED';
+      } else if (isLockedInRedis || (seat.status === 'LOCKED' && seat.lockedUntil && new Date(seat.lockedUntil) > new Date())) {
+        effectiveStatus = 'LOCKED';
+      } else {
+        effectiveStatus = 'AVAILABLE';
+      }
 
       return {
         _id: seat._id,
@@ -218,9 +264,8 @@ const getShowDetailsWithSeats = async (req, res, next) => {
         row: seat.row,
         number: seat.number,
         category: seat.category,
-        columnPosition: seat.columnPosition,
-        price,
-        status
+        price: seat.price,
+        status: effectiveStatus
       };
     });
 
@@ -234,15 +279,13 @@ const getShowDetailsWithSeats = async (req, res, next) => {
   }
 };
 
-const SeatLockService = require('../services/seatLock.service');
-
 // @route   POST /api/shows/:id/lock-seats
-// @desc    Lock seats temporarily with Redis & Socket.IO broadcast
+// @desc    Lock seats atomically with Redis & Socket.IO broadcast
 // @access  Public / Authenticated
 const lockShowSeats = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { seatIdentifiers, sessionId } = req.body;
+    const { seatIdentifiers, sessionId, lockToken } = req.body;
 
     if (!seatIdentifiers || !Array.isArray(seatIdentifiers) || seatIdentifiers.length === 0) {
       return ApiResponse.error(res, 'Please provide at least one seat to lock', 400, 'INVALID_SEATS');
@@ -255,7 +298,7 @@ const lockShowSeats = async (req, res, next) => {
     // Determine user or session identity
     const userId = req.user ? req.user._id.toString() : (sessionId || req.ip || 'guest_user');
 
-    const result = await SeatLockService.lockSeats(id, seatIdentifiers, userId);
+    const result = await SeatLockService.lockSeats(id, seatIdentifiers, userId, 600, lockToken);
     return ApiResponse.success(res, 'Seats locked successfully for 10 minutes', result);
   } catch (err) {
     return ApiResponse.error(res, err.message, 400, 'LOCK_FAILED');
@@ -263,12 +306,12 @@ const lockShowSeats = async (req, res, next) => {
 };
 
 // @route   POST /api/shows/:id/unlock-seats
-// @desc    Release locked seats
+// @desc    Release locked seats atomically
 // @access  Public / Authenticated
 const unlockShowSeats = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { seatIdentifiers, sessionId } = req.body;
+    const { seatIdentifiers, sessionId, lockToken } = req.body;
 
     if (!seatIdentifiers || !Array.isArray(seatIdentifiers)) {
       return ApiResponse.error(res, 'Invalid seat identifiers', 400, 'INVALID_SEATS');
@@ -276,7 +319,7 @@ const unlockShowSeats = async (req, res, next) => {
 
     const userId = req.user ? req.user._id.toString() : (sessionId || req.ip || 'guest_user');
 
-    const result = await SeatLockService.unlockSeats(id, seatIdentifiers, userId);
+    const result = await SeatLockService.unlockSeats(id, seatIdentifiers, userId, lockToken);
     return ApiResponse.success(res, 'Seats unlocked', result);
   } catch (err) {
     return ApiResponse.error(res, err.message, 400, 'UNLOCK_FAILED');

@@ -2,7 +2,7 @@ const Redis = require('ioredis');
 const { REDIS_URL } = require('./env');
 const logger = require('../utils/logger');
 
-// In-Memory Fallback Store with TTL handling for environments without a running Redis server
+// In-Memory Fallback Store with TTL handling for local dev/test without Redis
 class MemoryRedisClient {
   constructor() {
     this.store = new Map();
@@ -92,43 +92,130 @@ class MemoryRedisClient {
     this.timers.clear();
     return 'OK';
   }
+
+  // Emulate Lua eval script executions atomically in-memory
+  async eval(script, numKeys, ...keysAndArgs) {
+    const keys = keysAndArgs.slice(0, numKeys);
+    const args = keysAndArgs.slice(numKeys);
+
+    // Multi-seat lock script emulation
+    if (script.includes('cjson.decode') && script.includes('tonumber(ARGV[2])')) {
+      const lockPayload = args[0];
+      const ttlSeconds = parseInt(args[1], 10) || 600;
+      const expectedUserId = String(args[2]);
+      const expectedToken = args[3] ? String(args[3]) : null;
+
+      // 1. Check all keys
+      for (const key of keys) {
+        const raw = this.store.get(key);
+        if (raw) {
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (e) {
+            parsed = { userId: raw };
+          }
+          if (parsed.userId !== expectedUserId && (!expectedToken || parsed.lockToken !== expectedToken)) {
+            return 0; // Lock acquisition rejected
+          }
+        }
+      }
+
+      // 2. Lock all keys atomically
+      for (const key of keys) {
+        this.store.set(key, lockPayload);
+        this.expire(key, ttlSeconds);
+      }
+      return 1;
+    }
+
+    // Atomic compare-and-delete script emulation
+    if (script.includes('LUA_COMPARE_AND_DELETE_LOCK') || (script.includes('cjson.decode') && script.includes('deleted'))) {
+      const token = args[0] ? String(args[0]) : null;
+      const userId = args[1] ? String(args[1]) : null;
+      let deleted = 0;
+
+      for (const key of keys) {
+        const raw = this.store.get(key);
+        if (raw) {
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (e) {
+            parsed = { userId: raw };
+          }
+          if ((token && parsed.lockToken === token) || (userId && parsed.userId === userId)) {
+            if (this.timers.has(key)) {
+              clearTimeout(this.timers.get(key));
+              this.timers.delete(key);
+            }
+            this.store.delete(key);
+            deleted++;
+          }
+        }
+      }
+      return deleted;
+    }
+
+    return 0;
+  }
 }
 
 let redisClient;
+const isProduction = process.env.NODE_ENV === 'production';
+const isTest = process.env.NODE_ENV === 'test';
 
-try {
-  const realClient = new Redis(REDIS_URL, {
-    maxRetriesPerRequest: 1,
-    retryStrategy: () => null, // don't hang if redis is not running
-    connectTimeout: 2000,
-    lazyConnect: true
-  });
-
-  realClient.connect()
-    .then(() => {
-      logger.info('Connected to Redis server successfully.');
-      redisClient = realClient;
-    })
-    .catch((err) => {
-      logger.warn(`Redis server not reachable (${err.message}). Using high-performance in-memory lock store.`);
-      redisClient = new MemoryRedisClient();
+if (isTest) {
+  redisClient = new MemoryRedisClient();
+} else {
+  try {
+    const realClient = new Redis(REDIS_URL, {
+      maxRetriesPerRequest: 1,
+      retryStrategy: () => (isProduction ? 2000 : null),
+      connectTimeout: 2000,
+      lazyConnect: true
     });
 
-  realClient.on('error', (err) => {
-    if (!redisClient || redisClient instanceof MemoryRedisClient) return;
-    logger.warn(`Redis connection error (${err.message}). Falling back to in-memory store.`);
-    redisClient = new MemoryRedisClient();
-  });
+    realClient.connect()
+      .then(() => {
+        logger.info('Connected to Redis server successfully.');
+        redisClient = realClient;
+      })
+      .catch((err) => {
+        if (isProduction) {
+          logger.error(`CRITICAL: Redis server connection failed in PRODUCTION (${err.message}). In-memory fallback is disabled in production.`);
+          throw new Error(`Production Redis connection failed: ${err.message}`);
+        } else {
+          logger.warn(`Redis server not reachable (${err.message}). Using in-memory lock store for development.`);
+          redisClient = new MemoryRedisClient();
+        }
+      });
 
-  redisClient = realClient;
-} catch (err) {
-  logger.warn('Initializing in-memory store directly.');
-  redisClient = new MemoryRedisClient();
+    realClient.on('error', (err) => {
+      if (isProduction) {
+        logger.error(`CRITICAL: Production Redis connection error: ${err.message}`);
+      } else {
+        if (!redisClient || redisClient instanceof MemoryRedisClient) return;
+        logger.warn(`Redis connection error (${err.message}). Falling back to in-memory store.`);
+        redisClient = new MemoryRedisClient();
+      }
+    });
+
+    redisClient = realClient;
+  } catch (err) {
+    if (isProduction) {
+      throw err;
+    }
+    logger.warn('Initializing in-memory store directly.');
+    redisClient = new MemoryRedisClient();
+  }
 }
 
-// Ensure an instance is always ready synchronously
 const getRedisClient = () => {
   if (!redisClient) {
+    if (isProduction) {
+      throw new Error('Production Redis client is not initialized.');
+    }
     redisClient = new MemoryRedisClient();
   }
   return redisClient;
@@ -136,5 +223,6 @@ const getRedisClient = () => {
 
 module.exports = {
   getRedisClient,
-  redisClient
+  redisClient,
+  MemoryRedisClient
 };

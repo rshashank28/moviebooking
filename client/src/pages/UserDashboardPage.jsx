@@ -49,7 +49,7 @@ export default function UserDashboardPage() {
     setLoading(true);
     try {
       const res = await api.get('/user/dashboard');
-      setDashboardData(res.data);
+      setDashboardData(res.data?.data || res.data);
     } catch (err) {
       console.error('Failed to load dashboard', err);
     } finally {
@@ -74,7 +74,8 @@ export default function UserDashboardPage() {
         bookingId: selectedBookingToCancel.bookingId,
         reason: cancelReason
       });
-      success(`Booking cancelled. ₹${res.data?.refund?.refundAmount} refund processed!`);
+      const refundData = res.data?.data || res.data;
+      success(`Booking cancelled. ₹${refundData?.refund?.refundAmount || refundData?.refundAmount || ''} refund processed!`);
       setSelectedBookingToCancel(null);
       fetchDashboard();
     } catch (err) {

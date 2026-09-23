@@ -19,6 +19,7 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
   let baseUrl;
   let mongoServer;
   let adminToken = '';
+  let customerToken = '';
   let organizerToken = '';
   let organizerId = '';
   let eventId = '';
@@ -44,7 +45,16 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     });
     adminToken = generateAccessToken(adminUser);
 
-    // 2. Create Organizer
+    // 2. Create Customer
+    const customerUser = await User.create({
+      name: 'Normal Customer',
+      email: `cust_${Date.now()}@showpulse.com`,
+      password: 'Password@123',
+      role: 'CUSTOMER'
+    });
+    customerToken = generateAccessToken(customerUser);
+
+    // 3. Create Organizer
     const orgRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -141,7 +151,26 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     assert.strictEqual(typeof body.data.overview.totalOrganizers, 'number');
   });
 
-  it('5. should list platform users with pagination for admin', async () => {
+  it('5. Customer attempting admin endpoint should return 403 Forbidden', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/metrics`, {
+      headers: { Authorization: `Bearer ${customerToken}` }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  it('6. Customer attempting organizer endpoint should return 403 Forbidden', async () => {
+    const res = await fetch(`${baseUrl}/api/organizer/stats`, {
+      headers: { Authorization: `Bearer ${customerToken}` }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  it('7. Unauthenticated request to admin metrics should return 401 Unauthorized', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/metrics`);
+    assert.strictEqual(res.status, 401);
+  });
+
+  it('8. should list platform users with pagination for admin', async () => {
     const res = await fetch(`${baseUrl}/api/admin/users`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
@@ -151,7 +180,7 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     assert.ok(Array.isArray(body.data));
   });
 
-  it('6. should list organizers for admin review', async () => {
+  it('9. should list organizers for admin review', async () => {
     const res = await fetch(`${baseUrl}/api/admin/organizers`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
@@ -162,7 +191,7 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     assert.ok(body.data.length >= 1);
   });
 
-  it('7. should update organizer verification status by admin', async () => {
+  it('10. should update organizer verification status by admin', async () => {
     const res = await fetch(`${baseUrl}/api/admin/organizers/${organizerId}/status`, {
       method: 'PATCH',
       headers: {
@@ -177,7 +206,7 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     assert.strictEqual(body.data.status, 'VERIFIED');
   });
 
-  it('8. should create a system discount coupon as admin', async () => {
+  it('11. should create a system discount coupon as admin', async () => {
     const res = await fetch(`${baseUrl}/api/admin/coupons`, {
       method: 'POST',
       headers: {
@@ -199,7 +228,7 @@ describe('Phases 13 & 14: Organizer and Admin Test Suite', () => {
     assert.strictEqual(body.data.code, 'ADMINFEST50');
   });
 
-  it('9. should list system coupons as admin', async () => {
+  it('12. should list system coupons as admin', async () => {
     const res = await fetch(`${baseUrl}/api/admin/coupons`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });

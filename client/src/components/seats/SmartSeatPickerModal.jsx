@@ -47,15 +47,16 @@ export default function SmartSeatPickerModal({ isOpen, onClose, showId, onSeatsS
 
     try {
       const res = await api.get(`/recommendations/seats?showId=${showId}&count=${ticketCount}&preference=${preference}`);
-      if (res.data?.recommendation?.seats) {
-        const seatIds = res.data.recommendation.seats.map((s) => s.seatIdentifier);
+      const data = res.data?.data || res.data;
+      if (data?.recommendation?.seats) {
+        const seatIds = data.recommendation.seats.map((s) => s.seatIdentifier);
         onSeatsSelected(seatIds);
         onClose();
       } else {
         setError('No contiguous seat combinations found for this count & preference.');
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not find contiguous seats.');
+      setError(err.response?.data?.message || err.message || 'Could not find contiguous seats.');
     } finally {
       setLoading(false);
     }

@@ -6,7 +6,7 @@ const City = require('../models/City');
 const ApiResponse = require('../utils/apiResponse');
 
 // @route   POST /api/ai/assistant
-// @desc    Process natural language queries with database-grounded response & quick action cards
+// @desc    Process natural language queries with true database price & city grounding
 // @access  Public
 const processUserQuery = async (req, res, next) => {
   try {
@@ -22,8 +22,9 @@ const processUserQuery = async (req, res, next) => {
     const isMovieQuery = cleanPrompt.includes('movie') || cleanPrompt.includes('film') || cleanPrompt.includes('cinema') || cleanPrompt.includes('theater') || cleanPrompt.includes('imax');
     const isEventQuery = cleanPrompt.includes('event') || cleanPrompt.includes('concert') || cleanPrompt.includes('comedy') || cleanPrompt.includes('show') || cleanPrompt.includes('standup') || cleanPrompt.includes('music') || cleanPrompt.includes('sports');
 
-    // Extract price constraint (e.g. "under 300", "below 500", "less than 200")
-    const priceMatch = cleanPrompt.match(/(?:under|below|less than|max|within)\s*(?:₹|rs\.?|inr)?\s*(\d+)/i);
+    // Extract price constraint (e.g. "under 300", "below 500", "less than 1000", "500 budget", "₹300 budget")
+    const priceMatch = cleanPrompt.match(/(?:under|below|less than|max|within|budget of|around)\s*(?:₹|rs\.?|inr)?\s*(\d+)/i) ||
+      cleanPrompt.match(/(?:₹|rs\.?|inr)?\s*(\d+)\s*(?:budget|price)/i);
     const maxBudget = priceMatch ? parseInt(priceMatch[1], 10) : null;
 
     // Extract format constraint
@@ -32,7 +33,7 @@ const processUserQuery = async (req, res, next) => {
     else if (cleanPrompt.includes('4dx')) formatFilter = '4DX';
     else if (cleanPrompt.includes('3d')) formatFilter = '3D';
 
-    // Extract Genre / Keyword candidates
+    // Extract Genre candidates
     const genresList = ['Action', 'Sci-Fi', 'Comedy', 'Drama', 'Thriller', 'Horror', 'Romance', 'Adventure', 'Animation'];
     const matchedGenres = genresList.filter((g) => cleanPrompt.includes(g.toLowerCase()));
 
@@ -46,6 +47,30 @@ const processUserQuery = async (req, res, next) => {
       }
     }
 
+    // Resolve City ID and Venues in that city
+    const cityDoc = cities.find((c) => c.name.toLowerCase() === detectedCity.toLowerCase());
+    const venueFilter = { status: 'ACTIVE' };
+    if (cityDoc) {
+      venueFilter.$or = [{ city: cityDoc._id }, { city: new RegExp(`^${detectedCity}$`, 'i') }];
+    } else {
+      venueFilter.city = new RegExp(`^${detectedCity}$`, 'i');
+    }
+    const venuesInCity = await Venue.find(venueFilter).select('_id');
+    const venueIds = venuesInCity.map((v) => v._id);
+
+    // Find shows in this city with price constraint
+    const showQuery = {
+      venue: { $in: venueIds }
+    };
+    if (maxBudget) {
+      showQuery['priceTiers.price'] = { $lte: maxBudget };
+    }
+    if (formatFilter) {
+      showQuery.format = formatFilter;
+    }
+
+    const availableMovieIds = await Show.find(showQuery).distinct('movie');
+
     let results = {
       movies: [],
       events: [],
@@ -54,9 +79,13 @@ const processUserQuery = async (req, res, next) => {
     let responseText = '';
     let suggestedActions = [];
 
-    // 2. Query execution based on parsed intent
+    // 2. Query execution grounded in actual DB records
     if (isMovieQuery || (!isEventQuery && matchedGenres.length > 0)) {
       const movieFilter = { status: 'NOW_SHOWING' };
+
+      if (availableMovieIds.length > 0) {
+        movieFilter._id = { $in: availableMovieIds };
+      }
       if (matchedGenres.length > 0) {
         movieFilter.genres = { $in: matchedGenres };
       }
@@ -70,7 +99,8 @@ const processUserQuery = async (req, res, next) => {
 
       if (results.movies.length > 0) {
         const topMovie = results.movies[0];
-        responseText = `Here are the top ${matchedGenres.length > 0 ? matchedGenres.join('/') : 'trending'} movies playing in ${detectedCity}. **${topMovie.title}** has a high rating of ⭐ ${topMovie.rating}/10 and is a great match!`;
+        const budgetText = maxBudget ? ` under ₹${maxBudget}` : '';
+        responseText = `Here are the top ${matchedGenres.length > 0 ? matchedGenres.join('/') : 'trending'} movies${budgetText} playing in ${detectedCity}. **${topMovie.title}** has a high rating of ⭐ ${topMovie.rating}/10 and is a great match!`;
         suggestedActions = [
           `Book tickets for ${topMovie.title}`,
           `Find IMAX shows in ${detectedCity}`,
@@ -84,6 +114,10 @@ const processUserQuery = async (req, res, next) => {
         city: { $regex: new RegExp(detectedCity, 'i') },
         status: 'PUBLISHED'
       };
+
+      if (maxBudget) {
+        eventFilter['ticketCategories.price'] = { $lte: maxBudget };
+      }
 
       if (cleanPrompt.includes('comedy') || cleanPrompt.includes('standup')) {
         eventFilter.category = 'STANDUP_COMEDY';
@@ -99,7 +133,8 @@ const processUserQuery = async (req, res, next) => {
 
       if (results.events.length > 0) {
         const topEvent = results.events[0];
-        const eventIntro = `Found thrilling live experiences in ${detectedCity}! **${topEvent.title}** (${topEvent.category}) on ${new Date(topEvent.date).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })} at ${topEvent.venueName}.`;
+        const budgetText = maxBudget ? ` under ₹${maxBudget}` : '';
+        const eventIntro = `Found thrilling live experiences in ${detectedCity}${budgetText}! **${topEvent.title}** (${topEvent.category}) on ${new Date(topEvent.date).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })} at ${topEvent.venueName}.`;
         responseText = responseText ? `${responseText} \n\n${eventIntro}` : eventIntro;
         suggestedActions.push(`Explore ${topEvent.category.toLowerCase()} passes`);
       }

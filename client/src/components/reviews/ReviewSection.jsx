@@ -35,7 +35,7 @@ export default function ReviewSection({ itemType = 'MOVIE', itemId, itemTitle })
     setLoading(true);
     try {
       const res = await api.get(`/reviews/${itemType}/${itemId}`);
-      setReviews(res.data || []);
+      setReviews(res.data?.data || res.data || []);
     } catch (err) {
       console.error('Failed to load reviews', err);
     } finally {

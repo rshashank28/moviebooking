@@ -39,7 +39,7 @@ export default function MoviesPage() {
       };
 
       const res = await api.get('/movies', { params });
-      setMovies(res.data || []);
+      setMovies(res.data?.data || []);
     } catch (err) {
       console.error('Failed to load movies', err);
       setMovies([]);

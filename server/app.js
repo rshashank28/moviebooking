@@ -20,7 +20,9 @@ const server = http.createServer(app);
 initSocketIO(server);
 
 // Initialize Redis & DB
-connectDB();
+if (process.env.NODE_ENV !== 'test') {
+  connectDB();
+}
 getRedisClient();
 
 // Security Headers

@@ -12,7 +12,7 @@ router.post('/create', authenticate, bookingController.createBooking);
 router.get('/my-bookings', authenticate, bookingController.getMyBookings);
 router.get('/:id', optionalAuth, bookingController.getBookingDetails);
 
-// Ticket Gate Scanner Check-in
-router.post('/tickets/scan-checkin', optionalAuth, bookingController.scanCheckInTicket);
+// Ticket Gate Scanner Check-in (Strictly Authenticated ADMIN / ORGANIZER only)
+router.post('/tickets/scan-checkin', authenticate, authorize('ADMIN', 'ORGANIZER'), bookingController.scanCheckInTicket);
 
 module.exports = router;

@@ -1,8 +1,10 @@
 const Show = require('../models/Show');
 const Seat = require('../models/Seat');
+const ShowSeat = require('../models/ShowSeat');
 const Event = require('../models/Event');
 const Coupon = require('../models/Coupon');
 const User = require('../models/User');
+const Booking = require('../models/Booking');
 
 const MOVIE_CONVENIENCE_FEE_PER_TICKET = 30;
 const EVENT_CONVENIENCE_FEE_PER_TICKET = 40;
@@ -24,36 +26,46 @@ class PricingService {
       throw new Error('Show not found');
     }
 
-    if (!seatIdentifiers || seatIdentifiers.length === 0) {
+    if (!seatIdentifiers || !Array.isArray(seatIdentifiers) || seatIdentifiers.length === 0) {
       throw new Error('No seats selected');
     }
 
-    // Retrieve seat records from DB to ensure authentic categories
-    const seats = await Seat.find({
-      screen: show.screen._id,
+    // Retrieve seat records from ShowSeat inventory (with fallback to Screen Seats if legacy)
+    let showSeats = await ShowSeat.find({
+      show: showId,
       seatIdentifier: { $in: seatIdentifiers }
     });
 
-    if (seats.length !== seatIdentifiers.length) {
-      throw new Error('One or more selected seats are invalid');
+    if (showSeats.length !== seatIdentifiers.length) {
+      // Fallback: check physical screen seats
+      const physicalSeats = await Seat.find({
+        screen: show.screen._id || show.screen,
+        seatIdentifier: { $in: seatIdentifiers }
+      });
+      if (physicalSeats.length !== seatIdentifiers.length) {
+        throw new Error('One or more selected seats are invalid');
+      }
+
+      const priceMap = new Map();
+      (show.priceTiers || []).forEach((t) => priceMap.set(t.category, t.price));
+      showSeats = physicalSeats.map((s) => ({
+        seatIdentifier: s.seatIdentifier,
+        row: s.row,
+        number: s.number,
+        category: s.category,
+        price: priceMap.get(s.category) || 200
+      }));
     }
 
-    // Build price map from Show priceTiers
-    const priceMap = new Map();
-    (show.priceTiers || []).forEach((t) => {
-      priceMap.set(t.category, t.price);
-    });
-
     let baseAmount = 0;
-    const enrichedSeats = seats.map((seat) => {
-      const price = priceMap.get(seat.category) || 200;
-      baseAmount += price;
+    const enrichedSeats = showSeats.map((seat) => {
+      baseAmount += seat.price;
       return {
         seatIdentifier: seat.seatIdentifier,
         row: seat.row,
         number: seat.number,
         category: seat.category,
-        price
+        price: seat.price
       };
     });
 
@@ -75,19 +87,36 @@ class PricingService {
         validUntil: { $gte: new Date() }
       });
 
-      if (coupon && baseAmount >= coupon.minOrderAmount) {
-        if (coupon.discountType === 'PERCENTAGE') {
-          const rawDiscount = (baseAmount * coupon.discountValue) / 100;
-          discountAmount = Math.min(rawDiscount, coupon.maxDiscount || rawDiscount);
-        } else {
-          discountAmount = Math.min(coupon.discountValue, baseAmount);
+      if (coupon && baseAmount >= (coupon.minOrderAmount || 0)) {
+        // Validate usage limits
+        const isUnderGlobalLimit = !coupon.usageLimit || (coupon.usedCount || 0) < coupon.usageLimit;
+        let isUnderUserLimit = true;
+
+        if (userId && coupon.perUserLimit) {
+          const userUsedCount = await Booking.countDocuments({
+            user: userId,
+            'pricing.couponCode': coupon.code,
+            bookingStatus: 'CONFIRMED'
+          });
+          if (userUsedCount >= coupon.perUserLimit) {
+            isUnderUserLimit = false;
+          }
         }
-        discountAmount = Math.round(discountAmount);
-        validatedCoupon = coupon.code;
+
+        if (isUnderGlobalLimit && isUnderUserLimit) {
+          if (coupon.discountType === 'PERCENTAGE') {
+            const rawDiscount = (baseAmount * coupon.discountValue) / 100;
+            discountAmount = Math.min(rawDiscount, coupon.maxDiscount || rawDiscount);
+          } else {
+            discountAmount = Math.min(coupon.discountValue, baseAmount);
+          }
+          discountAmount = Math.round(discountAmount);
+          validatedCoupon = coupon.code;
+        }
       }
     }
 
-    // Validate loyalty points redemption
+    // Validate loyalty points redemption (1 point = ₹1, up to 20% of base amount)
     let loyaltyDiscount = 0;
     let validLoyaltyPointsRedeemed = 0;
 
@@ -96,11 +125,11 @@ class PricingService {
       if (user && user.loyaltyPoints > 0) {
         const maxRedeemable = Math.min(
           user.loyaltyPoints,
-          loyaltyPointsToRedeem,
-          Math.floor(baseAmount * 0.20) // max 20% of base amount can be paid with points
+          parseInt(loyaltyPointsToRedeem, 10),
+          Math.floor(baseAmount * 0.20)
         );
         validLoyaltyPointsRedeemed = maxRedeemable;
-        loyaltyDiscount = maxRedeemable; // 1 pt = ₹1
+        loyaltyDiscount = maxRedeemable;
       }
     }
 
@@ -132,6 +161,10 @@ class PricingService {
     const event = await Event.findById(eventId);
     if (!event) {
       throw new Error('Event not found');
+    }
+
+    if (!passes || !Array.isArray(passes) || passes.length === 0) {
+      throw new Error('Please select at least one pass category');
     }
 
     let baseAmount = 0;
@@ -169,15 +202,31 @@ class PricingService {
         validUntil: { $gte: new Date() }
       });
 
-      if (coupon && baseAmount >= coupon.minOrderAmount) {
-        if (coupon.discountType === 'PERCENTAGE') {
-          const rawDiscount = (baseAmount * coupon.discountValue) / 100;
-          discountAmount = Math.min(rawDiscount, coupon.maxDiscount || rawDiscount);
-        } else {
-          discountAmount = Math.min(coupon.discountValue, baseAmount);
+      if (coupon && baseAmount >= (coupon.minOrderAmount || 0)) {
+        const isUnderGlobalLimit = !coupon.usageLimit || (coupon.usedCount || 0) < coupon.usageLimit;
+        let isUnderUserLimit = true;
+
+        if (userId && coupon.perUserLimit) {
+          const userUsedCount = await Booking.countDocuments({
+            user: userId,
+            'pricing.couponCode': coupon.code,
+            bookingStatus: 'CONFIRMED'
+          });
+          if (userUsedCount >= coupon.perUserLimit) {
+            isUnderUserLimit = false;
+          }
         }
-        discountAmount = Math.round(discountAmount);
-        validatedCoupon = coupon.code;
+
+        if (isUnderGlobalLimit && isUnderUserLimit) {
+          if (coupon.discountType === 'PERCENTAGE') {
+            const rawDiscount = (baseAmount * coupon.discountValue) / 100;
+            discountAmount = Math.min(rawDiscount, coupon.maxDiscount || rawDiscount);
+          } else {
+            discountAmount = Math.min(coupon.discountValue, baseAmount);
+          }
+          discountAmount = Math.round(discountAmount);
+          validatedCoupon = coupon.code;
+        }
       }
     }
 
@@ -189,7 +238,7 @@ class PricingService {
       if (user && user.loyaltyPoints > 0) {
         const maxRedeemable = Math.min(
           user.loyaltyPoints,
-          loyaltyPointsToRedeem,
+          parseInt(loyaltyPointsToRedeem, 10),
           Math.floor(baseAmount * 0.20)
         );
         validLoyaltyPointsRedeemed = maxRedeemable;

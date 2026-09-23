@@ -55,11 +55,11 @@ export default function SeatSelectionPage() {
     setLoading(true);
     try {
       const res = await api.get(`/shows/${showId}`);
-      setShowData(res.data);
+      setShowData(res.data?.data || res.data);
 
       // Fetch active locks
       const locksRes = await api.get(`/shows/${showId}/locked-seats`);
-      const activeLocks = locksRes.data || {};
+      const activeLocks = locksRes.data?.data || locksRes.data || {};
       const othersLocked = new Set();
       const myLocked = [];
 
@@ -184,8 +184,9 @@ export default function SeatSelectionPage() {
           seatIdentifiers: nextSelected,
           sessionId: sessionIdRef.current
         });
-        if (res.data?.expiresAt) {
-          setLockExpiresAt(new Date(res.data.expiresAt));
+        const lockResData = res.data?.data || res.data;
+        if (lockResData?.expiresAt) {
+          setLockExpiresAt(new Date(lockResData.expiresAt));
         }
       } catch (err) {
         setSelectedSeats(selectedSeats);
@@ -246,15 +247,16 @@ export default function SeatSelectionPage() {
         sessionId: sessionIdRef.current
       });
 
-      if (res.data?.success) {
+      const lockData = res.data?.data || res.data;
+      if (res.data?.success || lockData?.success || lockData?.lockedSeats) {
         setSelectedSeats(seatIds);
-        if (res.data.expiresAt) {
-          setLockExpiresAt(new Date(res.data.expiresAt));
+        if (lockData?.expiresAt) {
+          setLockExpiresAt(new Date(lockData.expiresAt));
         }
         success(`✨ ${seatIds.length} optimal seats locked for you!`);
       }
     } catch (err) {
-      toastError(err.response?.data?.message || 'Failed to lock recommended seats');
+      toastError(err.response?.data?.message || err.message || 'Failed to lock recommended seats');
     }
   };
 

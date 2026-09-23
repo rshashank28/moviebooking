@@ -8,10 +8,11 @@ const { app } = require('../app');
 const { seedAllData } = require('../seed/seedData');
 const User = require('../models/User');
 const Show = require('../models/Show');
-const Seat = require('../models/Seat');
+const ShowSeat = require('../models/ShowSeat');
 const Coupon = require('../models/Coupon');
 const Booking = require('../models/Booking');
 const { generateAccessToken } = require('../utils/jwt');
+const SeatLockService = require('../services/seatLock.service');
 
 describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () => {
   let testServer;
@@ -19,9 +20,11 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
   let mongoServer;
   let demoUser;
   let authToken;
+  let adminToken;
   let demoShow;
   let createdBookingId = '';
   let generatedVerificationToken = '';
+  let activeLockToken = '';
 
   before(async () => {
     mongoServer = await MongoMemoryServer.create();
@@ -38,7 +41,15 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
       loyaltyPoints: 100
     });
 
+    const adminUser = await User.findOne({ role: 'ADMIN' }) || await User.create({
+      name: 'Admin Test',
+      email: 'admin_test@test.com',
+      password: 'password123',
+      role: 'ADMIN'
+    });
+
     authToken = generateAccessToken(demoUser);
+    adminToken = generateAccessToken(adminUser);
     demoShow = await Show.findOne({});
 
     // Seed test coupon
@@ -108,7 +119,11 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
     assert.strictEqual(body.data.discountAmount, 50);
   });
 
-  it('3. should initiate booking & create Razorpay order', async () => {
+  it('3. should acquire atomic lock & initiate booking & create Razorpay order', async () => {
+    // Acquire atomic lock first
+    const lockRes = await SeatLockService.lockSeats(demoShow._id, ['A1', 'A2'], demoUser._id);
+    activeLockToken = lockRes.lockToken;
+
     const res = await fetch(`${baseUrl}/api/bookings/create`, {
       method: 'POST',
       headers: {
@@ -119,7 +134,8 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
         bookingType: 'MOVIE',
         showId: demoShow._id,
         seatIdentifiers: ['A1', 'A2'],
-        couponCode: 'PROMO50'
+        couponCode: 'PROMO50',
+        lockToken: activeLockToken
       })
     });
 
@@ -158,21 +174,25 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
     generatedVerificationToken = body.data.booking.qrVerificationToken;
   });
 
-  it('5. should have updated seat records in database to booked', async () => {
-    const seats = await Seat.find({
-      screen: demoShow.screen,
+  it('5. should have updated ShowSeat records in database to BOOKED', async () => {
+    const showSeats = await ShowSeat.find({
+      show: demoShow._id,
       seatIdentifier: { $in: ['A1', 'A2'] }
     });
 
-    for (const s of seats) {
-      assert.strictEqual(s.isAvailable, false);
+    assert.strictEqual(showSeats.length, 2);
+    for (const s of showSeats) {
+      assert.strictEqual(s.status, 'BOOKED');
     }
   });
 
-  it('6. Gate check-in scan should admit authentic QR ticket', async () => {
+  it('6. Gate check-in scan should admit authentic QR ticket with ADMIN credentials', async () => {
     const res = await fetch(`${baseUrl}/api/bookings/tickets/scan-checkin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
       body: JSON.stringify({
         token: generatedVerificationToken
       })
@@ -188,7 +208,10 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
   it('7. Gate check-in scanner should REJECT duplicate second scan (Anti-Fraud)', async () => {
     const res = await fetch(`${baseUrl}/api/bookings/tickets/scan-checkin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
       body: JSON.stringify({
         token: generatedVerificationToken
       })
@@ -198,5 +221,19 @@ describe('Phases 7, 8 & 9: Booking, Pricing, Razorpay & QR Pass Test Suite', () 
     assert.strictEqual(res.status, 400);
     assert.strictEqual(body.success, false);
     assert.strictEqual(body.code, 'ALREADY_USED');
+  });
+
+  it('8. Gate check-in should REJECT unauthenticated requests', async () => {
+    const res = await fetch(`${baseUrl}/api/bookings/tickets/scan-checkin`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        token: generatedVerificationToken
+      })
+    });
+
+    assert.strictEqual(res.status, 401);
   });
 });

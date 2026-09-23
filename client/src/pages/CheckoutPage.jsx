@@ -68,7 +68,7 @@ export default function CheckoutPage() {
       };
 
       const res = await api.post('/bookings/calculate-price', payload);
-      setPricing(res.data);
+      setPricing(res.data?.data || res.data);
     } catch (err) {
       console.error('Pricing calculation error', err);
       toastError(err.message || 'Failed to calculate price');
@@ -108,7 +108,8 @@ export default function CheckoutPage() {
       };
 
       const orderRes = await api.post('/bookings/create', bookingPayload);
-      const { bookingId, razorpayOrder } = orderRes.data;
+      const orderData = orderRes.data?.data || orderRes.data;
+      const { bookingId, razorpayOrder } = orderData;
 
       // 2. Perform Payment Verification (Dev Mock / Razorpay SDK Integration)
       // Generates verifiable test payment signature
@@ -117,13 +118,14 @@ export default function CheckoutPage() {
 
       const verifyRes = await api.post('/payments/verify', {
         bookingId,
-        razorpay_order_id: razorpayOrder.id,
+        razorpay_order_id: razorpayOrder?.id,
         razorpay_payment_id: mockPaymentId,
         razorpay_signature: testSignature,
         method: paymentMethod
       });
 
-      success(`Booking Confirmed! You earned ${verifyRes.data?.pointsEarned || 30} loyalty points.`);
+      const verifyData = verifyRes.data?.data || verifyRes.data;
+      success(`Booking Confirmed! You earned ${verifyData?.pointsEarned || 30} loyalty points.`);
       navigate(`/tickets/${bookingId}`);
     } catch (err) {
       console.error('Payment checkout error', err);

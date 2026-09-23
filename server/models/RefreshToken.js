@@ -5,12 +5,22 @@ const refreshTokenSchema = new mongoose.Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true
+      required: true,
+      index: true
     },
     token: {
       type: String,
       required: true,
       unique: true
+    },
+    tokenHash: {
+      type: String,
+      index: true
+    },
+    family: {
+      type: String,
+      required: true,
+      index: true
     },
     expiresAt: {
       type: Date,
@@ -18,7 +28,8 @@ const refreshTokenSchema = new mongoose.Schema(
     },
     isRevoked: {
       type: Boolean,
-      default: false
+      default: false,
+      index: true
     },
     replacedByToken: {
       type: String,
@@ -34,7 +45,7 @@ const refreshTokenSchema = new mongoose.Schema(
 
 // TTL index to automatically prune expired tokens from MongoDB
 refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-refreshTokenSchema.index({ user: 1 });
+refreshTokenSchema.index({ user: 1, family: 1 });
 
 const RefreshToken = mongoose.model('RefreshToken', refreshTokenSchema);
 module.exports = RefreshToken;

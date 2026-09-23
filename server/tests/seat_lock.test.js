@@ -7,6 +7,7 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 const { app } = require('../app');
 const { seedAllData } = require('../seed/seedData');
 const Show = require('../models/Show');
+const SeatLockService = require('../services/seatLock.service');
 
 describe('Phases 5 & 6: Real-Time Seat Locking & Race Condition Test Suite', () => {
   let testServer;
@@ -58,10 +59,11 @@ describe('Phases 5 & 6: Real-Time Seat Locking & Race Condition Test Suite', () 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(body.success, true);
     assert.deepStrictEqual(body.data.lockedSeats, ['A1', 'A2']);
+    assert.ok(body.data.lockToken);
     assert.ok(body.data.expiresAt);
   });
 
-  it('2. User 2 should be REJECTED when trying to lock already held seat A1 (Race Condition Guard)', async () => {
+  it('2. User 2 should be REJECTED when trying to lock already held seat A1 (All-or-Nothing Atomic Guard)', async () => {
     const res = await fetch(`${baseUrl}/api/shows/${sampleShow._id}/lock-seats`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -75,7 +77,10 @@ describe('Phases 5 & 6: Real-Time Seat Locking & Race Condition Test Suite', () 
     assert.strictEqual(res.status, 400);
     assert.strictEqual(body.success, false);
     assert.strictEqual(body.code, 'LOCK_FAILED');
-    assert.ok(body.message.includes('currently held'));
+
+    // Verify B1 was NOT partially locked
+    const activeLocks = await SeatLockService.getActiveLocks(sampleShow._id);
+    assert.strictEqual(activeLocks['B1'], undefined);
   });
 
   it('3. should return active locks for the show', async () => {
@@ -117,5 +122,28 @@ describe('Phases 5 & 6: Real-Time Seat Locking & Race Condition Test Suite', () 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(body.success, true);
     assert.deepStrictEqual(body.data.lockedSeats, ['A1']);
+  });
+
+  it('6. Concurrent race condition: 2 simultaneous lock requests for same seat C1', async () => {
+    const [resA, resB] = await Promise.all([
+      fetch(`${baseUrl}/api/shows/${sampleShow._id}/lock-seats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seatIdentifiers: ['C1'], sessionId: 'client_A' })
+      }),
+      fetch(`${baseUrl}/api/shows/${sampleShow._id}/lock-seats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seatIdentifiers: ['C1'], sessionId: 'client_B' })
+      })
+    ]);
+
+    const statusA = resA.status;
+    const statusB = resB.status;
+
+    // Exactly one must succeed with 200, the other must fail with 400
+    const statuses = [statusA, statusB].sort();
+    assert.strictEqual(statuses[0], 200);
+    assert.strictEqual(statuses[1], 400);
   });
 });

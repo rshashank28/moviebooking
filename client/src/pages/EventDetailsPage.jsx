@@ -31,9 +31,10 @@ export default function EventDetailsPage() {
     setLoading(true);
     try {
       const res = await api.get(`/events/${id}`);
-      setEvent(res.data);
-      if (res.data?.ticketCategories?.length > 0) {
-        setSelectedTicketCategory(res.data.ticketCategories[0]);
+      const data = res.data?.data || res.data;
+      setEvent(data);
+      if (data?.ticketCategories?.length > 0) {
+        setSelectedTicketCategory(data.ticketCategories[0]);
       }
     } catch (err) {
       console.error('Failed to load event details', err);

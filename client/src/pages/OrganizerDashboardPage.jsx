@@ -61,8 +61,9 @@ export default function OrganizerDashboardPage() {
     setLoading(true);
     try {
       const res = await api.get('/organizer/stats');
-      setStats(res.data.stats);
-      setEvents(res.data.events || []);
+      const statsData = res.data?.data || res.data;
+      setStats(statsData?.stats || statsData);
+      setEvents(statsData?.events || []);
     } catch (err) {
       console.error('Failed to load organizer stats', err);
       toastError(err.message || 'Access restricted to Organizer accounts');

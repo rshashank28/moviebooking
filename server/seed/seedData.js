@@ -278,13 +278,12 @@ const seedAllData = async () => {
         number: i,
         seatIdentifier: `${row.rowLabel}${i}`,
         category: row.category,
-        columnPosition: i,
-        isAvailable: true
+        columnPosition: i
       });
     }
   }
-  await Seat.insertMany(seatDocs);
-  logger.info(`Generated ${seatDocs.length} auditorium seats for Screen 1.`);
+  const insertedSeats = await Seat.insertMany(seatDocs);
+  logger.info(`Generated ${insertedSeats.length} auditorium seats for Screen 1.`);
 
   // 7. Seed Shows for Today & Tomorrow
   const todayStr = new Date().toISOString().split('T')[0];
@@ -320,8 +319,38 @@ const seedAllData = async () => {
     }
   }
 
-  await Show.insertMany(showDocs);
-  logger.info(`Seeded ${showDocs.length} Shows for Patna.`);
+  const ShowSeat = require('../models/ShowSeat');
+  await ShowSeat.deleteMany({});
+  const insertedShows = await Show.insertMany(showDocs);
+
+  // Generate show-specific seat inventory for all shows
+  const showSeatDocs = [];
+  const priceMap = new Map([
+    ['REGULAR', 180],
+    ['PREMIUM', 240],
+    ['VIP', 340],
+    ['RECLINER', 480]
+  ]);
+
+  for (const show of insertedShows) {
+    for (const seat of insertedSeats) {
+      showSeatDocs.push({
+        show: show._id,
+        seat: seat._id,
+        screen: screen1._id,
+        venue: venue1._id,
+        seatIdentifier: seat.seatIdentifier,
+        row: seat.row,
+        number: seat.number,
+        category: seat.category,
+        price: priceMap.get(seat.category) || 200,
+        status: 'AVAILABLE'
+      });
+    }
+  }
+
+  await ShowSeat.insertMany(showSeatDocs);
+  logger.info(`Seeded ${insertedShows.length} Shows with ${showSeatDocs.length} ShowSeat inventory records for Patna.`);
   logger.info('Database seeding completed successfully!');
 };
 

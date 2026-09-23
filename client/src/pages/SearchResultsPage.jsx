@@ -40,7 +40,7 @@ export default function SearchResultsPage() {
           city: selectedCity?.name
         }
       });
-      setResults(res.data);
+      setResults(res.data?.data || res.data);
     } catch (err) {
       console.error('Search error', err);
     } finally {

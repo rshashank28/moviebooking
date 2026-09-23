@@ -29,7 +29,7 @@ export default function QRScannerPage() {
       const res = await api.post('/bookings/tickets/scan-checkin', {
         token: tokenInput.trim()
       });
-      setScanResult(res.data);
+      setScanResult(res.data?.data || res.data);
     } catch (err) {
       setScanResult({
         isValid: false,

@@ -22,7 +22,7 @@ api.interceptors.request.use(
 
 // Response interceptor to handle token refresh and errors
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => response,
   async (error) => {
     const originalRequest = error.config;
     
@@ -50,7 +50,10 @@ api.interceptors.response.use(
     }
 
     const message = error.response?.data?.message || error.message || 'Something went wrong';
-    return Promise.reject(new Error(message));
+    const err = new Error(message);
+    err.response = error.response;
+    err.code = error.response?.data?.code;
+    return Promise.reject(err);
   }
 );
 

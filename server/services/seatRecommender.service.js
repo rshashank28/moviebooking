@@ -1,5 +1,6 @@
 const Show = require('../models/Show');
 const Seat = require('../models/Seat');
+const ShowSeat = require('../models/ShowSeat');
 const SeatLockService = require('./seatLock.service');
 
 class SeatRecommenderService {
@@ -18,7 +19,6 @@ class SeatRecommenderService {
     const screen = show.screen;
     let layoutRows = screen.layout || [];
 
-    // If layout is not set, generate default layout
     if (!layoutRows || layoutRows.length === 0) {
       layoutRows = [
         { rowLabel: 'A', category: 'RECLINER', seatCount: 8, aisleGaps: [] },
@@ -30,37 +30,50 @@ class SeatRecommenderService {
       ];
     }
 
-    // Get all seats for screen
-    let seats = await Seat.find({ screen: screen._id });
-    if (!seats || seats.length === 0) {
-      // If seats weren't populated in DB, generate virtual seats from layout
-      seats = [];
-      layoutRows.forEach((rowConfig) => {
-        for (let i = 1; i <= rowConfig.seatCount; i++) {
-          seats.push({
-            seatIdentifier: `${rowConfig.rowLabel}${i}`,
-            row: rowConfig.rowLabel,
-            number: i,
-            category: rowConfig.category,
-            isAvailable: true
-          });
-        }
-      });
+    // Query show-specific inventory (ShowSeat)
+    let showSeats = await ShowSeat.find({ show: showId });
+
+    if (!showSeats || showSeats.length === 0) {
+      const physicalSeats = await Seat.find({ screen: screen._id });
+      const priceMap = new Map();
+      (show.priceTiers || []).forEach((t) => priceMap.set(t.category, t.price));
+
+      if (physicalSeats.length > 0) {
+        showSeats = physicalSeats.map((s) => ({
+          seatIdentifier: s.seatIdentifier,
+          row: s.row,
+          number: s.number,
+          category: s.category,
+          price: priceMap.get(s.category) || 200,
+          status: show.bookedSeats?.includes(s.seatIdentifier) ? 'BOOKED' : 'AVAILABLE'
+        }));
+      } else {
+        showSeats = [];
+        layoutRows.forEach((rowConfig) => {
+          for (let i = 1; i <= rowConfig.seatCount; i++) {
+            showSeats.push({
+              seatIdentifier: `${rowConfig.rowLabel}${i}`,
+              row: rowConfig.rowLabel,
+              number: i,
+              category: rowConfig.category,
+              price: priceMap.get(rowConfig.category) || 200,
+              status: 'AVAILABLE'
+            });
+          }
+        });
+      }
     }
 
-    const bookedSeats = new Set(show.bookedSeats || []);
     const lockedSeatIds = new Set(await SeatLockService.getLockedSeatsForShow(showId));
-
-    // Price map
-    const priceMap = new Map();
-    (show.priceTiers || []).forEach((t) => {
-      priceMap.set(t.category, t.price);
-    });
 
     // Group available seats by row
     const rowMap = new Map();
-    seats.forEach((seat) => {
-      const isUnavailable = !seat.isAvailable || bookedSeats.has(seat.seatIdentifier) || lockedSeatIds.has(seat.seatIdentifier);
+    showSeats.forEach((seat) => {
+      const isUnavailable =
+        seat.status === 'BOOKED' ||
+        seat.status === 'UNAVAILABLE' ||
+        lockedSeatIds.has(seat.seatIdentifier);
+
       if (!rowMap.has(seat.row)) {
         rowMap.set(seat.row, []);
       }
@@ -69,7 +82,7 @@ class SeatRecommenderService {
         row: seat.row,
         number: seat.number,
         category: seat.category,
-        price: priceMap.get(seat.category) || 250,
+        price: seat.price || 250,
         isAvailable: !isUnavailable
       });
     });
@@ -89,7 +102,6 @@ class SeatRecommenderService {
       for (let i = 0; i <= rowSeats.length - seatCount; i++) {
         const slice = rowSeats.slice(i, i + seatCount);
 
-        // Check if all seats in slice are available and contiguous in numbering
         const allAvailable = slice.every((s) => s.isAvailable);
         let isContiguous = true;
         for (let k = 0; k < slice.length - 1; k++) {

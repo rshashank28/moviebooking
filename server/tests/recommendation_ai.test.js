@@ -9,6 +9,8 @@ const { app } = require('../app');
 const City = require('../models/City');
 const Venue = require('../models/Venue');
 const Screen = require('../models/Screen');
+const Seat = require('../models/Seat');
+const ShowSeat = require('../models/ShowSeat');
 const Movie = require('../models/Movie');
 const Event = require('../models/Event');
 const Show = require('../models/Show');
@@ -54,6 +56,31 @@ describe('Phases 15 & 16: Smart Recommendations & AI Assistant Test Suite', () =
         { rowLabel: 'E', category: 'REGULAR', seatCount: 10, aisleGaps: [] }
       ]
     });
+
+    // Create physical seat records
+    const seatDocs = [];
+    const layout = [
+      { rowLabel: 'A', category: 'RECLINER', seatCount: 6 },
+      { rowLabel: 'B', category: 'VIP', seatCount: 8 },
+      { rowLabel: 'C', category: 'PREMIUM', seatCount: 10 },
+      { rowLabel: 'D', category: 'REGULAR', seatCount: 10 },
+      { rowLabel: 'E', category: 'REGULAR', seatCount: 10 }
+    ];
+
+    for (const r of layout) {
+      for (let i = 1; i <= r.seatCount; i++) {
+        seatDocs.push({
+          screen: screen._id,
+          venue: venue._id,
+          row: r.rowLabel,
+          number: i,
+          seatIdentifier: `${r.rowLabel}${i}`,
+          category: r.category,
+          columnPosition: i
+        });
+      }
+    }
+    const insertedSeats = await Seat.insertMany(seatDocs);
 
     const movie = await Movie.create({
       title: 'Interstellar Odyssey',
@@ -114,6 +141,29 @@ describe('Phases 15 & 16: Smart Recommendations & AI Assistant Test Suite', () =
       ]
     });
     showId = show._id.toString();
+
+    // Create ShowSeat records
+    const priceMap = new Map([
+      ['RECLINER', 500],
+      ['VIP', 350],
+      ['PREMIUM', 250],
+      ['REGULAR', 180]
+    ]);
+
+    const showSeatDocs = insertedSeats.map((s) => ({
+      show: show._id,
+      seat: s._id,
+      screen: screen._id,
+      venue: venue._id,
+      seatIdentifier: s.seatIdentifier,
+      row: s.row,
+      number: s.number,
+      category: s.category,
+      price: priceMap.get(s.category) || 200,
+      status: ['D4', 'D5'].includes(s.seatIdentifier) ? 'BOOKED' : 'AVAILABLE'
+    }));
+
+    await ShowSeat.insertMany(showSeatDocs);
   });
 
   after(async () => {
@@ -179,7 +229,40 @@ describe('Phases 15 & 16: Smart Recommendations & AI Assistant Test Suite', () =
     assert.strictEqual(body.data.cards.movies[0].title, 'Interstellar Odyssey');
   });
 
-  it('5. should process natural language query for live comedy events', async () => {
+  it('5. should process natural language query with BUDGET filter (under ₹300)', async () => {
+    const res = await fetch(`${baseUrl}/api/ai/assistant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'movies under ₹300 in Patna',
+        city: 'Patna'
+      })
+    });
+    const body = await res.json();
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(body.success, true);
+    assert.strictEqual(body.data.maxBudget, 300);
+    assert.ok(body.data.cards.movies.length >= 1);
+  });
+
+  it('6. should process natural language query with BUDGET filter (below 500)', async () => {
+    const res = await fetch(`${baseUrl}/api/ai/assistant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'sci-fi films below 500 in Patna',
+        city: 'Patna'
+      })
+    });
+    const body = await res.json();
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(body.success, true);
+    assert.strictEqual(body.data.maxBudget, 500);
+  });
+
+  it('7. should process natural language query for live comedy events', async () => {
     const res = await fetch(`${baseUrl}/api/ai/assistant`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

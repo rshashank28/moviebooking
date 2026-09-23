@@ -30,7 +30,7 @@ export default function TicketViewPage() {
     setLoading(true);
     try {
       const res = await api.get(`/bookings/${bookingId}`);
-      setBooking(res.data);
+      setBooking(res.data?.data || res.data);
     } catch (err) {
       console.error('Failed to load booking ticket', err);
     } finally {

@@ -32,10 +32,6 @@ const seatSchema = new mongoose.Schema(
     columnPosition: {
       type: Number,
       required: true
-    },
-    isAvailable: {
-      type: Boolean,
-      default: true
     }
   },
   {

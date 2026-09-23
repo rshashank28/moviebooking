@@ -41,9 +41,10 @@ export default function MovieDetailsPage() {
           date: selectedDate || undefined
         }
       });
-      setMovieData(res.data);
-      if (!selectedDate && res.data?.availableDates?.length > 0) {
-        setSelectedDate(res.data.availableDates[0]);
+      const data = res.data?.data || res.data;
+      setMovieData(data);
+      if (!selectedDate && data?.availableDates?.length > 0) {
+        setSelectedDate(data.availableDates[0]);
       }
     } catch (err) {
       console.error('Failed to load movie details', err);
